@@ -29,7 +29,10 @@ Navigation controls:
   q / ESC          quit (auto-saves)
 
 Annotation controls:
-  left-drag        create annotation (feature -> text), then type the label
+  f                arm feature placement (press again to cancel); the NEXT left-drag
+                   creates an annotation. Clicks do nothing until armed, so stray
+                   clicks can't create features.
+  left-drag        (once armed) feature -> text position, then type the label
   digits + e       stop a track: type an annotation's id (shown by each circle),
                    then 'e' to stop it at the current frame (press 'e' again at
                    that same frame to clear); Backspace clears the typed id
@@ -169,6 +172,7 @@ class App:
         self.mode = MODE_NAV
         self.pending = None        # {"feature": (x,y), "text": (x,y)} while creating
         self.placing = False       # left button held, dragging text position
+        self.armed = False         # 'f' arms the next drag to create an annotation
         self.text_buffer = ""
         self.sel_buffer = ""       # digits typed to select an annotation by id
         self.seek_target = None    # pending frame to seek to (trackbar-independent)
@@ -221,6 +225,8 @@ class App:
         fx = int(round(x / self.display_scale))
         fy = int(round(y / self.display_scale))
         if event == cv2.EVENT_LBUTTONDOWN:
+            if not self.armed:                     # press 'f' first — stray clicks do nothing
+                return
             self.paused = True                     # freeze the feature while placing
             self.pending = {"feature": (fx, fy), "text": (fx, fy)}
             self.placing = True
@@ -231,6 +237,16 @@ class App:
             self.placing = False
             self.mode = MODE_TEXT                  # release -> query text from user
             self.text_buffer = ""
+
+    def select_digit(self, d):
+        """Add a digit to the id selection, keeping multi-digit ids typeable without
+        letting the buffer run away: the digit is appended only while the result is
+        still a prefix of some real id, otherwise it starts a fresh selection. So with
+        ids 1-5, '1' then '5' selects 5 (not 15); with an id 12, '1' then '2' selects 12.
+        """
+        cand = self.sel_buffer + d
+        self.sel_buffer = cand if any(str(a["id"]).startswith(cand)
+                                      for a in self.annotations) else d
 
     def selected_ann(self):
         """The annotation whose id matches the current selection buffer, or None."""
@@ -308,6 +324,7 @@ class App:
         self.placing = False
         self.mode = MODE_NAV
         self.text_buffer = ""
+        self.armed = False          # one annotation per 'f' — re-arm for the next
 
     # ---- tracking ----------------------------------------------------------
 
@@ -590,8 +607,10 @@ class App:
         if self.paused:
             parts.append("PAUSED")
         parts.append(f"ann:{len(self.annotations)}")
+        if self.armed and self.mode == MODE_NAV:
+            parts.append("PLACE FEATURE: drag (f=cancel)")
         if not self.render and self.sel_buffer:
-            parts.append(f"SEL #{self.sel_buffer} (e=stop r=clear)")
+            parts.append(f"SEL #{self.sel_buffer} (e/r=stop  t/l/b  c=side)")
         if self.mode == MODE_TEXT:
             parts.append(f"TEXT: {self.text_buffer}_")
         text = "   ".join(parts)
@@ -801,8 +820,8 @@ class App:
                 print(f"Removed annotation #{removed['id']} ({removed['text']!r})")
         elif key == ord('s') and not self.render:     # save now
             self.save()
-        elif 48 <= key <= 57 and not self.render:     # digit -> build annotation-id selection
-            self.sel_buffer += chr(key)
+        elif 48 <= key <= 57 and not self.render:     # digit -> select an annotation by id
+            self.select_digit(chr(key))
         elif key in (8, 127) and not self.render:     # backspace -> clear id selection
             self.sel_buffer = ""
         elif key == ord('e') and not self.render:     # stop selected track at current frame
@@ -817,6 +836,10 @@ class App:
             self.toggle_spec_selected("show_box", "box", "'b'")
         elif key == ord('c') and not self.render:     # flip selected annotation's connect side
             self.flip_line_side_selected()
+        elif key == ord('f') and not self.render:     # arm the next drag to place a feature
+            self.armed = not self.armed
+            print("Feature placement ARMED — drag from the feature to the label position."
+                  if self.armed else "Feature placement cancelled.")
         return True
 
     def flip_line_side_selected(self):
